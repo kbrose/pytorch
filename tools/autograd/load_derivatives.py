@@ -4,6 +4,7 @@
 # a list of `Derivative`. See `tools.codegen.api.autograd` for the data models.
 from collections import defaultdict, Counter
 import re
+import typing
 from typing import Sequence, Any, Tuple, List, Set, Dict, Match, Optional
 import yaml
 
@@ -61,6 +62,7 @@ def load_derivatives(derivatives_yaml_path: str, native_yaml_path: str) -> Seque
                 forward_derivatives=info.forward_derivatives,
                 all_saved_inputs=info.all_saved_inputs,
                 all_saved_outputs=info.all_saved_outputs,
+                all_named_grads=info.all_named_grads,
                 args_with_derivatives=info.args_with_derivatives,
                 non_differentiable_arg_names=info.non_differentiable_arg_names,
                 output_differentiability=info.output_differentiability,
@@ -88,6 +90,12 @@ def create_derivative(f: NativeFunction, formula: str, var_names: Tuple[str, ...
     formula, saved_inputs = saved_variables(formula, arguments, var_names)
     formula, saved_outputs = saved_variables(formula, named_returns, var_names)
 
+    named_grads: Dict[str, int] = {}
+    for i, return_name in enumerate(return_names):
+        grad_name = f'grad_{return_name}'
+        if re.search(IDENT_REGEX.format(grad_name), formula):
+            insert_or_raise(named_grads, grad_name, i)
+
     # Check that the referenced derivatives in the formula are in bounds
     for i in used_gradient_indices(formula):
         if i >= len(f.func.returns):
@@ -102,6 +110,7 @@ def create_derivative(f: NativeFunction, formula: str, var_names: Tuple[str, ...
         var_names=var_names,
         saved_inputs=saved_inputs,
         saved_outputs=saved_outputs,
+        named_grads=named_grads,
     )
 
 def create_forward_derivative(f: NativeFunction, formula: str, names: Tuple[str, ...]) -> ForwardDerivative:
@@ -432,6 +441,7 @@ def create_differentiability_info(
         forward_derivatives=forward_derivatives,
         all_saved_inputs=dedup_vars([v for d in derivatives for v in d.saved_inputs]),
         all_saved_outputs=dedup_vars([v for d in derivatives for v in d.saved_outputs]),
+        all_named_grads=merge_dicts(*[d.named_grads for d in derivatives]),
         args_with_derivatives=args_with_derivatives,
         non_differentiable_arg_names=non_differentiable_arg_names,
         output_differentiability=output_differentiability,
@@ -606,3 +616,25 @@ def dedup_vars(vars: Sequence[SavedAttribute]) -> Sequence[SavedAttribute]:
         seen.add(name)
         saved.append(var)
     return saved
+
+
+K = typing.TypeVar('K')
+V = typing.TypeVar('V')
+
+def merge_dicts(*dicts: Dict[K, V]) -> Dict[K, V]:
+    """Merges dictionaries, raising in the event of a conflict."""
+    out: Dict[K, V] = {}
+    for d in dicts:
+        for k, v in d.items():
+            insert_or_raise(out, k, v)
+    return out
+
+
+def insert_or_raise(d: Dict[K, V], key: K, value: V) -> None:
+    """Inserts nto the dict, raising if the key exists with a different value."""
+    previous_value = d.setdefault(key, value)
+    if previous_value != value:
+        raise RuntimeError(f'{key} maps to distinct values in different dictionaries:\n'
+                           f'    {previous_value}\n'
+                           '  and\n'
+                           f'    {value}')

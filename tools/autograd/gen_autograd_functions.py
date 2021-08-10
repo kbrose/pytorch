@@ -462,6 +462,10 @@ def process_function(info: DifferentiabilityInfo, template: CodeTemplate) -> str
 
     if uses_single_grad(info):
         body.append('auto& grad = grads[0];')
+    else:
+        # Generate aliases for gradients named for returned values.
+        body.extend(f'auto& {name} = grads[{index}];'
+                    for name, index in info.all_named_grads.items())
 
     def emit_derivative(
         derivative: Derivative,
